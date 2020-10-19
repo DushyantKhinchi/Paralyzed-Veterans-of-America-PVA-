@@ -1,0 +1,881 @@
+﻿---
+title: "Data Mining Assignment 3 Target Marketing – PVA Fundraising (Part 2)"
+author: "Pallavi"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(dplyr)
+library(ranger)
+library(recipes)
+library(glmnet)
+library(varImp)
+library(factoextra)
+library(FactoMineR)
+kdd98Data<-read_csv('C:/Users/palla/Documents/Course Work/Fall 2019/IDS 572- Data Mining for Business/Assignment 2/cup98LRN/cup98LRN.txt')
+kdd98Data %>% group_by(TARGET_B) %>% count()
+
+
+
+#Examine and remove some of the variables which will not be useful
+
+#Is TCODE useful? -how many examples by TCODE, and does response rate, response$ vary by TCODE?
+kdd98Data %>% group_by(TCODE) %>% summarise(n=n(), avgResp=mean(TARGET_B), avgD=mean(TARGET_D)) %>% view()
+#do you want to keep this, or remove ?
+
+#......similarly check some other variables......
+
+
+#Suppose you want to remove some 'useless' attributes
+varsToRemove <- c('AGEFLAG', 'DOB', 'GEOCODE2', 'LIFESRC', 'MAILCODE', 'NOEXCH', 'ODATEDW', 'OSOURCE', 'SOLP3', 'STATE', 'ZIP', 'TCODE')
+
+kdd98Data<- kdd98Data %>% select(-varsToRemove)
+
+
+#remove the RAMNT and RDATE variables - summary of  data  in these vars is already present in other variables 
+kdd98Data<-kdd98Data %>% select(- starts_with("RAMNT"), -starts_with("RDATE"), )
+
+#remove variables ADATE_3 ...ADATE_24 -- we may want to use ADATE_2 later -- for this we will select variable names using a regular expression
+kdd98Data<-kdd98Data %>% select(- matches("ADATE_[3-9]|ADATE_[0-9][0_9]"))
+     #the matches here uses a regular expression (regex)
+    # (an online regex tester you may find useful: https://regex101.com/)
+ 
+#similarly you can remove the  RFA_3...RFA_24 variables
+
+kdd98Data<-kdd98Data %>% select(- matches("RFA_[0_9]|RFA_[0-9][0_9]"))  #specify your regex for this
+
+
+
+
+#how will you handle missing values?
+
+#Which vars have missing values?
+#colMeans(is.na(pvaTrain))[colMeans(is.na(pvaTrain))>0] %>% view
+
+#take a look at HOMEOWNR
+glimpse(kdd98Data$HOMEOWNR)
+#Suppose we want to replace any 'H' values with '1', and all others (including missings) with '0', try
+#xx<-kdd98Data %>% mutate(HOMEOWNR=if_else(HOMEOWNR=='H', "1", "0"))
+# check the values with xx %>% glimpse(HOMEOWNR) will show that the NA values remain
+#   The if_else function is defined as
+#      if_else(condition, true, false, missing = NULL)
+#    where the last argument can specify a replacemnt value for the NAs
+kdd98Data <- kdd98Data %>% mutate(HOMEOWNR=if_else(HOMEOWNR=='H', "1", "0", "0"))
+
+#Check the data dictionary -- there are some variables which have a 'X' to indicate presence/yes and NAs elsewhere -- can be useful to replace the 'X' with '1' and NAs with '0'
+kdd98Data<- kdd98Data %>% mutate(RECINHSE=if_else(RECINHSE=='X', "1", "0", "0"))
+kdd98Data<- kdd98Data %>% mutate(RECP3=if_else(RECP3=='X', "1", "0", "0"))
+#kdd98Data<- kdd98Data %>% mutate(NOEXCH=if_else(NOEXCH=='X', "1", "0", "0"))
+kdd98Data<- kdd98Data %>% mutate(RECPGVG=if_else(RECPGVG=='X', "1", "0", "0"))
+kdd98Data<- kdd98Data %>% mutate(RECSWEEP=if_else(RECSWEEP=='X', "1", "0", "0"))
+kdd98Data<- kdd98Data %>% mutate(MAJOR=if_else(MAJOR=='X', "1", "0", "0"))
+kdd98Data<- kdd98Data %>% mutate(PEPSTRFL=if_else(PEPSTRFL=='X', "1", "0", "0"))
+# There are other variable coded as 'X' or missing -- can do the same for these....for example RECPGVG, .....(which are the others?)
+
+
+
+#Are the CHILD03 and CHILD07 variable useful ?  --check the values of CHILD03 and CHILD07, and how they relate to the target variables 
+summary(as.factor(kdd98Data$CHILD03))
+
+kdd98Data %>% group_by(as.factor(CHILD03)) %>% summarise(n=n(), avgResp=mean(TARGET_B), avgD=mean(TARGET_D)) %>% view()
+
+summary(as.factor(kdd98Data$CHILD07))
+
+kdd98Data %>% group_by(as.factor(CHILD07)) %>% summarise(n=n(), avgResp=mean(TARGET_B), avgD=mean(TARGET_D)) %>% view()
+
+summary(as.factor(kdd98Data$CHILD12))
+
+kdd98Data %>% group_by(as.factor(CHILD12)) %>% summarise(n=n(), avgResp=mean(TARGET_B), avgD=mean(TARGET_D)) %>% view()
+
+summary(as.factor(kdd98Data$CHILD18))
+
+kdd98Data %>% group_by(as.factor(CHILD18)) %>% summarise(n=n(), avgResp=mean(TARGET_B), avgD=mean(TARGET_D)) %>% view()
+
+
+#What about the other CHILD__ variables ?
+
+#Since there are also so many missings, we may want to remove these variables
+kdd98Data<-kdd98Data %>% select(-CHILD03, -CHILD07,-CHILD12,-CHILD18 )   #specify your variables
+
+
+#Look at the donor interest variables like BIBLE, BOATS. CATLG, ..... - they have 'Y' or are empty.  We can replace the empty (ie NA) values with, say, 'N' or '0'?
+interestVars=c('VETERANS', 'BIBLE','CATLG', 'HOMEE', 'PETS', 'CDPLAY', 'STEREO','PCOWNERS', 'PHOTO', 'CRAFTS', 'FISHER', 'GARDENIN', 'BOATS', 'WALKER', 'KIDSTUFF', 'CARDS', 'PLATES')
+
+#The replace_na(..) function can be useful for this https://www.rdocumentation.org/packages/tidyr/versions/0.8.3/topics/replace_na
+
+#define a function which calls replace_na() for a variable, and thenn we will call  this function within the mutate_at to operate on multiple variables
+myrna<-function(x) replace_na(x,0)
+xx<- kdd98Data %>% mutate_at(interestVars, myrna)
+
+#check the results --   
+xx[1:5, c('BIBLE', 'BOATS', 'CARDS')]
+
+
+
+#   have the NAs been replaced by 0?   
+#     ...but the Y remains as is -- we could change the Y to 1 and NAs to 0 in the function we define
+frepvals<- function(x) if_else(x=='Y', 1, 0, 0)
+xx<- kdd98Data %>% mutate_at(interestVars, frepvals)
+ ##check the results
+
+#Any remaining missing values?
+colMeans(is.na(kdd98Data))[colMeans(is.na(kdd98Data))>0]
+
+colMeans(is.na(xx))[colMeans(is.na(xx))>0.7]
+
+#drop the vars with very high % of values missing -- are these really missing values?
+misval<-names(xx)[colMeans(is.na(xx))>0.7]
+xx <- xx %>% select(-misval)#specify your variables
+ 
+
+ 
+#the variables like MBBOOKS, MBCRAFT, etc give the 'number of known times'number of known times the donor has responded to other  types of mail order offers.' -- so maybe the missing values here should be set to 0, or -1 (to differentiate from 0) ?
+myrna1<-function(x) replace_na(x,-1)
+ 
+xxVars<- c( 'MBCRAFT', 'MBGARDEN', 'MBBOOKS', 'MBCOLECT', 'MAGFAML', 'MAGFEM', 'MAGMALE', 'PUBGARDN', 'PUBCULIN', 'PUBHLTH', 'PUBDOITY', 'PUBNEWFN', 'PUBPHOTO', 'PUBOPP' )
+
+xx<- xx %>% mutate_at(xxVars, myrna) 
+
+#Check if this worked ?
+xx[1:10, xxVars]
+ 
+
+
+#Which variables have missing values
+colMeans(is.na(xx))[colMeans(is.na(xx))>0]
+
+# summary on these variables
+c=colnames(is.na(xx))[colMeans(is.na(xx))>0]
+summary(xx %>% select_at(c))
+
+
+#Examine these variables -- CLUSTER2 is a nominal (factor variable) - convert this to factor. Also convert the character variables to factors
+xx <- xx %>% mutate_if(is.character, as.factor)
+
+xx <- xx %>% mutate(CLUSTER2=as.factor(CLUSTER2))
+#Maybe you can you do the same with WEALTH1 and WEALTH2 ?
+xx <- xx %>% mutate(WEALTH1=as.factor(WEALTH1))
+xx <- xx %>% mutate(WEALTH2=as.factor(WEALTH2))
+#for the factor variables, we can replace NAs by a category/level -- suppose we want to name this level 'missing'. 
+repm<-function(x) replace_na("missing")
+xx<- xx %>% mutate_at(c('CLUSTER', 'GENDER', 'CLUSTER2', 'DOMAIN',  'WEALTH1', 'WEALTH2'), repm)
+
+summary(xx$WEALTH1)
+
+xx1<-xx
+#For the numeric variables , replace missing values with ??- median?
+#repx<-function(x) replace_na(median(x, na.rm=TRUE))
+    #NOTE - in general, if there are any NAs, the resut will be NA -- to omit NAs in calculation, set the na.rm=TRUE
+#xx1<- xx1 %>% mutate_at(c('AGE', 'INCOME', 'MSA', 'ADI', 'DMA', 'TIMELAG'), repx)
+xx1<-xx1%>%replace_na(list(AGE=median(xx1$AGE,na.rm=TRUE)))
+xx1<-xx1%>%replace_na(list(INCOME=median(xx1$INCOME,na.rm=TRUE)))
+xx1<-xx1%>%replace_na(list(MSA=median(xx1$MSA,na.rm=TRUE)))
+xx1<-xx1%>%replace_na(list(ADI=median(xx1$ADI,na.rm=TRUE)))
+xx1<-xx1%>%replace_na(list(DMA=median(xx1$DMA,na.rm=TRUE)))
+xx1<-xx1%>%replace_na(list(TIMELAG=median(xx1$TIMELAG,na.rm=TRUE)))
+
+#xx1$DMA
+
+#remove some other variables ....for eample
+xx1<-xx1 %>% select(-DATASRCE, -NEXTDATE)
+
+
+
+
+#Some data exploration, more recoded variables and new variables
+
+
+
+#the DOMAIN variable has 2 characters, first one for Urbanicity and the secoond for Socio-economic status. We want to separate these out into two variables
+xx2<-xx %>% mutate(domainU = substr(DOMAIN, 1,1))
+  #xx2 here is just to test it and save into a temporary data frame
+  # Check if this works as intended....if so,
+xx1<-xx1 %>% mutate(domainU = substr(DOMAIN, 1,1))
+xx1<-xx1 %>% mutate(domainSES = substr(DOMAIN, 2,2))
+xx1<-xx1 %>% select(-DOMAIN)  #and remove the DOMAIN variable
+
+
+#calculate the time difference between LAST_DATE and ADATE_2
+library(lubridate)
+d1<-paste(xx1$ADATE_2, "01", sep = "")
+d1<-parse_date_time(d1,  "ymd")
+d2<-paste(xx1$LASTDATE, "01", sep = "")
+d2<-parse_date_time(d2,  "ymd")
+xx1<- xx1 %>% mutate(totWeeks=as.duration(d2 %--% d1)/dweeks())
+
+
+#similarly, you can calculate the last promotion to gift time gap -- MAXADATE, ADATE_2
+
+dt2<-paste(xx1$MAXADATE,"01",sep="")
+dt2<-parse_date_time(dt2,"ymd")
+xx1<- xx1 %>% mutate(totmaxWeeks=as.duration(dt2 %--% d1)/dweeks())
+
+#....
+
+#average value of all responses, average value of response to all card promotions
+xx1<-xx1 %>% mutate(avgAllResp=if_else(NUMPROM>0, NGIFTALL/NUMPROM, 0), avgCardResp=ifelse(CARDPROM>0,CARDGIFT/CARDPROM,0))             
+ #Similarly, you can create a new variable for last gift to max gift ratio -- LASTGIFT, MAXRAMNT. Also another new variable for ratio of max to min gift amount -- MINRAMNT, MAXRAMNT
+
+xx1<-xx1 %>% mutate(LAST_MAX_GIFT=if_else(MAXRAMNT>0, LASTGIFT/MAXRAMNT, 0), MIN_MAX_AMNT=ifelse(MAXRAMNT>0,MINRAMNT/MAXRAMNT,0)) 
+
+
+
+
+#kdd98Data<-kdd98Data %>% mutate(lastToMaxGiftRatio=   _____ ,maxToMinGiftRatio= ______)
+
+
+#Look at the RFA_2 variable, which codes the recency, freqemcy and amount of giving (see the data dictionary). The first byte(character) gives recency - what value does this have....they are all the same value?----why?
+glimpse(xx1$RFA_2)
+#the R, F and A values in RFA_2 are given in the separate variables RFA_2R, RFA2_F, RFA2_A -- so we do not need to split the RFA_2 variable by character; and we don't need to keep RFA_2
+xx1<- xx1 %>% select(-RFA_2)
+
+# col1<-colnames(xx1)
+# write.csv(col1, file='column_names_updated1.csv')
+
+#remove some other variables
+#------------------------------------------------------------------------------------------------------------------------------------------------
+xx3<-xx1
+xx3<-xx3 %>% select(-RECP3,-RECPGVG,-RECSWEEP,-MDMAUD,-CLUSTER,-GENDER,-MAJOR,-PEPSTRFL,POP90C1,-POP90C2,-POP90C3,-POP90C4,-POP90C5,AGE903,-AGE905,-AGE906,-AGE907,-CHIL1,-CHIL2,-CHIL3,-HHAGE2,-HHAGE3,-MARR1,-MARR2,-MARR3,-MARR4,-HHP1,-HHP2,-HV1,-HV3,-HV4,-MSA,-ADI,-DMA,-IC1,-IC2,-IC6,-IC7,-IC8,-IC9,-LFC1,-LFC2,-LFC3,-LFC6,-LFC7,-LFC8,-LFC9,-LFC10,ADATE_2,-EC2,EC3,-EC4,-EC5,-EC6,-EC7,-EC8,-MINRAMNT,-MINRDATE,-MAXRAMNT,-MAXRDATE,-FISTDATE,-TIMELAG,-AVGGIFT,-RFA_2R,-RFA_2F,-RFA_2F,-RFA_2F,-MDMAUD_F,-MDMAUD_A,-CLUSTER2)   #specify your variables
+
+
+
+xx3 <- xx3 %>% select(-contains("ETH"))
+xx3 <- xx3 %>% select(-contains("CHILC"))
+xx3 <- xx3 %>% select(-contains("AGEC"))
+xx3 <- xx3 %>% select(-contains("HHN"))
+xx3 <- xx3 %>% select(-contains("DW"))
+xx3 <- xx3 %>% select(-contains("HUC"))
+xx3 <- xx3 %>% select(-contains("HHD"))
+xx3 <- xx3 %>% select(-contains("ETHC"))
+xx3 <- xx3 %>% select(-contains("HVP"))
+xx3 <- xx3 %>% select(-contains("HUR"))
+xx3 <- xx3 %>% select(-contains("RHP"))
+xx3 <- xx3 %>% select(-contains("HUPA"))
+xx3 <- xx3 %>% select(-contains("RP"))
+xx3 <- xx3 %>% select(-contains("IC1"))
+xx3 <- xx3 %>% select(-contains("MC"))
+xx3 <- xx3 %>% select(-contains("TPE"))
+xx3 <- xx3 %>% select(-contains("RFA"))
+xx3 <- xx3 %>% select(-contains("PEC"))
+xx3 <- xx3 %>% select(-contains("OCC"))
+xx3 <- xx3 %>% select(-contains("EIC"))
+xx3 <- xx3 %>% select(-contains("OEDC"))
+xx3 <- xx3 %>% select(-contains("SEC"))
+xx3 <- xx3 %>% select(-contains("VC"))
+xx3 <- xx3 %>% select(-contains("ANC"))
+xx3 <- xx3 %>% select(-contains("POBC"))
+xx3 <- xx3 %>% select(-contains("LSC"))
+xx3 <- xx3 %>% select(-contains("VOC"))
+xx3 <- xx3 %>% select(-contains("HC"))
+xx3 <- xx3 %>% select(-contains("AC"))
+xx3 <- xx3 %>% select(-contains("RFA"))
+xx3 <- xx3 %>% select(-contains("ADATE"))
+colMeans(is.na(xx3))[colMeans(is.na(xx3))>0]
+
+TARGET_D<-xx3$TARGET_D
+#remove some of the original attributes used for deriving new attributes
+xx3<- xx3 %>% select( -LASTDATE, -HOMEOWNR)
+xx3<- xx3 %>% select(-domainU, -domainSES, -WEALTH2,-WEALTH1)
+xx3<-xx3%>%select(-MDMAUD_R)
+xx3<-xx3%>%select(-TARGET_D)
+xx3<-xx3%>%select(-AGE902,-avgAllResp,-HHAS2)
+xx3<-xx3%>%select(-CONTROLN,-HPHONE_D)
+xx3<-xx3%>%select(-NGIFTALL)
+# varstorm<-c('PUBHLTH','POP902','POP903','AGE903','AGE904','HHAGE1','IC4','IC20','IC21','IC22','IC23')
+# kdd98Data<-kdd98Data %>% select(-varstorm)
+
+
+xx3$RECINHSE<-as.numeric(as.factor(xx3$RECINHSE))
+
+
+
+# str(kdd98Data)
+# cor_colm<-cor(kdd98Data)
+# write.table(cor_colm,file = "corcol.csv",sep = ",")
+# col_has_over_90 <- apply(cor, 2, function(x) any(x > .7))
+# rs[, col_has_over_90]
+
+write.csv(xx3, file='list of var.csv')
+#.......
+
+library(rsample)
+library(rpart)
+#Split data into training, test subsets,  and then balance the training data
+pvaSplit<-initial_split(xx3, prop=0.7)
+pvaTrain<-training(pvaSplit)
+pvaTest<-testing(pvaSplit)
+#Random forest before PCA
+xx3<-cbind(xx3,TARGET_D)
+
+
+#Target_D dataset
+DSplit<-initial_split(xx3, prop=0.7)
+DTrain<-training(DSplit)
+DTest<-testing(DSplit)
+
+view(DTrain)
+
+#balancing the training data, using undersampling and oversampling -- can use the 'ROSE' package and its ovun.sample function -- https://www.rdocumentation.org/packages/ROSE/versions/0.0-3/topics/ovun.sample
+
+#decision tree
+#lcDT1<-rpart(TARGET_B~.,data=pvaTrain,method="class",parms=list(split="information"),control=rpart.control(cp=0#.0001,minsplit=50))
+#printcp(lcDT1)
+
+library(ROSE)
+library(randomForest)
+us_pvaTrain <- ovun.sample(TARGET_B ~., data=as.data.frame(pvaTrain), na.action = na.pass, method = "under", p=0.2)$data
+us_pvaTrain %>% group_by(TARGET_B) %>% count()
+
+os_pvaTrain <- ovun.sample(TARGET_B ~., data=as.data.frame(pvaTrain), na.action = na.pass, method = "over", p=0.2)$data
+os_pvaTrain %>% group_by(TARGET_B) %>% count()
+
+bs_pvaTrain <- ovun.sample(TARGET_B ~., data=as.data.frame(pvaTrain), na.action = na.pass, method = "both", p=0.2)$data
+m<-bs_pvaTrain$TARGET_B
+bs_pvaTrain %>% group_by(TARGET_B) %>% count()
+
+bs_pvaTrain$TARGET_B<-as.factor(bs_pvaTrain$TARGET_B)
+pvaTest$TARGET_B<-as.factor(pvaTest$TARGET_B)
+
+
+
+D_pvTrain<-ovun.sample(TARGET_B~.,data=as.data.frame(DTrain),na.action=na.pass,method="both",p=0.2)$data
+D_pvTrain$TARGET_B<-as.factor(D_pvTrain$TARGET_B)
+DTest$TARGET_B<-as.factor(DTest$TARGET_B)
+#bs_pvaTest <- ovun.sample(TARGET_B ~., data=as.data.frame(pvaTest), na.action = na.pass, method = "both", p=0.2)$data
+#bs_pvaTest %>% group_by(TARGET_B) %>% count()
+#n<-bs_pvaTest$TARGET_B
+
+
+#-----------------------------------------Randomforest-----------------------------------------------------------------------------------------
+
+library(ranger)
+
+rf_m <- ranger(TARGET_B ~., data=bs_pvaTrain, num.trees=200, probability = TRUE, importance='permutation')
+     #probability=TRUE will give us predicted prob values form the predict(..) function
+    # with pobability=FALSE (default), the predict(..) function will give the predicted class label only
+
+abc<-rf_m$variable.importance %>% sort(decreasing =TRUE)
+q<-head(abc,30)
+rfvarimp<-names(q)
+
+view(abc)
+
+#Train data predictions
+pred_rf<-predict (rf_m, bs_pvaTrain)
+pred_rf<-as.data.frame(pred_rf$predictions)
+view(pred_rf)
+
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.1)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.2)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.3)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.4)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.5)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.6)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.7)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.8)
+table(Actual=bs_pvaTrain$TARGET_B, predicted=pred_rf$`1`>0.9)
+
+#Test data predictions
+pred_rf_test<-predict(rf_m, pvaTest)
+pred_rf_test<-as.data.frame(pred_rf_test$predictions)
+
+
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.1)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.2)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.3)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.4)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.5)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.6)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.7)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.8)
+table(Actual=pvaTest$TARGET_B, predicted=pred_rf_test$`1`>0.9)
+
+
+```
+
+```{r}
+#----------------------------------------------------------gbm------------------------------------------------------------------------------------
+
+library(ranger)
+library(randomForest)
+library(caret)
+library(e1071)
+library(rpart)
+library(gbm)
+library(ROCR)
+
+gbmTrain<-pvaTrain
+gbmTest<-pvaTest
+
+view(gbmTrain$TARGET_B)
+
+#gbm model with TargetB as target variable
+gbm_M2<-gbm(TARGET_B~.,data=subset(gbmTrain),distribution='bernoulli',n.tree=2000,shrinkage = 0.01,interaction.depth=4,bag.fraction=0.5,cv.folds=5,n.cores=4)
+
+#gbm model with TargetD as target variable 
+TagD_Train<-DTrain%>%select(-TARGET_B)
+
+gbm_M3<-gbm(TARGET_D~.,data=subset(TagD_Train),n.tree=2000,shrinkage = 0.01,interaction.depth=4,bag.fraction=0.5,cv.folds=5,n.cores=8)
+
+
+summary(gbm_M2)
+
+gbmvarimp<-c('avgCardResp', 'LASTGIFT', 'HV2', 'totWeeks', 'AGE', 'NUMPRM12', 'CARDPM12', 'WWIIVETS', 'STATEGOV', 'POP903', 'IC3', 'NUMPROM', 'LFC5', 'LAST_MAX_GIFT', 'MIN_MAX_AMNT', 'LFC4', 'CARDPROM', 'CARDGIFT', 'IC5','VIETVETS', 'POP901', 'EC3', 'POP902', 'HHAGE1', 'IC4', 'HHAS3', 'MALEVET', 'INCOME', 'PUBHLTH', 'HU2')
+
+plot(gbm_M2)
+
+```
+
+
+```{r}
+
+#----------------------------------------------Union RF U GBM-----------------------------------------------------------------------------------
+
+varlist<-union(rfvarimp, gbmvarimp)
+
+write.csv(varlist, file='column_names.csv')
+
+
+#-------------------------------------PCA------------------------------------------------------------------------------------------------------------
+d_Train1<-bs_pvaTrain %>% select(varlist)
+d_Test1<-pvaTest%>%select(varlist)
+
+#view(pnn)
+bs_pvaTrain <- bs_pvaTrain %>% select(varlist)
+
+pca_fun<-prcomp(bs_pvaTrain,scale=T)
+std_dev<-pca_fun$sdev
+pr_var<-std_dev^2
+
+prop_varex<-pr_var/sum(pr_var)
+plot(prop_varex)
+view(pca_fun$var)
+
+prop_varex[1:20]
+plot(prop_varex,xlab="Principal Component", ylab="Proportion of variance explained", type="b")
+
+plot(cumsum(prop_varex),xlab="Principal component",ylab="Cumulative proprtion of variance explained", type="b")
+
+fviz_screeplot(pca_fun, ncp=50)
+head(pca_fun$var$coord)
+fviz_pca_var(pca_fun)
+
+# train_data<-data.frame(TARGET_B=bs_pvaTrain$TARGET_B,pca_fun$x)
+train_data<-cbind(m, pca_fun$x)
+train_data<-train_data[,1:16]
+train_data<-as.data.frame(train_data)
+
+test_pca1<-predict(pca_fun,newdata=pvaTest)
+
+
+
+
+n<-pvaTest$TARGET_B
+
+#test_pca1<-data.frame(TARGET_B=bs_pvaTest$TARGET_B,test_pca1)
+test_pca1<-cbind(n, test_pca1)
+test_pca1<-test_pca1[,1:16]
+test_pca1<-as.data.frame(test_pca1)
+colnames(test_pca1)[colnames(test_pca1)=="n"] <- "TARGET_B"
+#-----------------------------Models-----------------------------------------------
+
+#Ridge Regression
+
+glmx<-train_data%>%select(-m)
+
+RR_model<-cv.glmnet(data.matrix(glmx), train_data$m, family="binomial")
+
+plot(RR_model)
+
+coef(RR_model, s="lambda.1se") %>% tidy() %>% view()
+coef(RR_model, s="lambda.min") %>% tidy() %>% view()
+RR_model$lambda.1se
+RR_model$lambda.min
+
+colnames(train_data)[colnames(train_data)=="m"] <- "TARGET_B"
+
+view(train_data)
+#sc_Trn<-predict(RR_model, data.matrix(select(train_data, -"TARGET_B",)), s="lambda.1se")
+#auc(as.numeric(as.character(train_data$TARGET_B)), sc_Trn)
+#sc_Trn<-predict(RR_model, data.matrix(select(train_data, -"TARGET_B")), s="lambda.min")
+#auc(as.numeric(as.character(train_data$TARGET_B)), sc_Trn)
+
+gbmtestx<-test_pca1%>%select(-TARGET_B)
+#sc_Tst<-predict(RR_model, data.matrix(gbmtestx), s="lambda.1se")
+#auc(as.numeric(as.character(test_pca1$TARGET_B)), sc_Tst)
+x<-as.matrix(train_data[,-1])
+y<-as.double(as.matrix(train_data[,1]))
+set.seed(999)
+view(x)
+view(y)
+#-------------------------------LASSO--------------------------------------------
+cv.lasso<-cv.glmnet(x,y,family='binomial',alpha=0)
+
+#Performance with lambda 1se
+sc_Trn_lasso_1se<-predict(cv.lasso, data.matrix(select(train_data, -"TARGET_B",)), s="lambda.1se",type="response")
+
+sc_Trn_lasso_1se[sc_Trn_lasso_1se>0.2]  <- 1
+sc_Trn_lasso_1se[sc_Trn_lasso_1se<=0.2] <- 0
+sc_Trn_lasso_1se  <- as.factor(sc_Trn_lasso_1se)
+
+#confusionMatrix(sc_Trn_lasso_1se,train_data$TARGET_B)
+
+#Performance with lambda.min
+sc_Trn_lasso_min<-predict(cv.lasso, data.matrix(select(train_data, -"TARGET_B",)), s="lambda.min",type="response")
+
+sc_Trn_lasso_min[sc_Trn_lasso_min>0.2]  <- 1
+sc_Trn_lasso_min[sc_Trn_lasso_min<=0.2] <- 0
+sc_Trn_lasso_min <- as.factor(sc_Trn_lasso_min)
+
+#confusionMatrix(sc_Trn_lasso_min,train_data$TARGET_B)
+#Test Performance with lambda.1se
+sc_Tst_lasso_1se<-predict(cv.lasso, data.matrix(select(test_pca1,  -"TARGET_B")), s="lambda.1se",type="response")
+
+sc_Tst_lasso_1se[sc_Tst_lasso_1se>0.2]  <- 1
+sc_Tst_lasso_1se[sc_Tst_lasso_1se<=0.2] <- 0
+sc_Tst_lasso_1se  <- as.factor(sc_Tst_lasso_1se)
+
+#confusionMatrix(sc_Tst_lasso_1se,test_pca$TARGET_B)
+
+#Test Performance with lambda.min
+sc_Tst_lasso_min<-predict(cv.lasso, data.matrix(select(test_pca1,  -"TARGET_B")), s="lambda.min",type="response")
+
+sc_Tst_lasso_min[sc_Tst_lasso_min>0.2]  <- 1
+sc_Tst_lasso_min[sc_Tst_lasso_min<=0.2] <- 0
+sc_Tst_lasso_min  <- as.factor(sc_Tst_lasso_min)
+
+#confusionMatrix(sc_Tst_lasso_min,test_pca1$TARGET_B)
+
+#---------------------------Ridge--------------------------------------------------
+
+cv.ridge<-cv.glmnet(x,y,family='binomial',alpha=1)
+plot(cv.ridge)
+
+#Performance with lambda 1se
+sc_Trn_ridge_1se<-predict(cv.ridge, data.matrix(select(train_data, -"TARGET_B",)), s="lambda.1se",type="response")
+
+sc_Trn_ridge_1se[sc_Trn_ridge_1se>0.2]  <- 1
+sc_Trn_ridge_1se[sc_Trn_ridge_1se<=0.2] <- 0
+sc_Trn_ridge_1se  <- as.factor(sc_Trn_ridge_1se)
+#confusionMatrix(sc_Trn_ridge_1se,train_data$TARGET_B)
+
+#Performance with lambda min
+sc_Trn_ridge_min<-predict(cv.ridge, data.matrix(select(train_data, -"TARGET_B",)), s="lambda.min",type="response")
+
+sc_Trn_ridge_min[sc_Trn_ridge_min>0.2]  <- 1
+sc_Trn_ridge_min[sc_Trn_ridge_min<=0.2] <- 0
+sc_Trn_ridge_min  <- as.factor(sc_Trn_ridge_min)
+#confusionMatrix(sc_Trn_ridge_min,train_data$TARGET_B)
+
+#Test Performance with lambda.1se
+sc_Tst_ridge_1se<-predict(cv.ridge, data.matrix(select(test_pca1,  -"TARGET_B")), s="lambda.1se",type="response")
+
+sc_Tst_ridge_1se[sc_Tst_ridge_1se>0.2]  <- 1
+sc_Tst_ridge_1se[sc_Tst_ridge_1se<=0.2] <- 0
+sc_Tst_ridge_1se  <- as.factor(sc_Tst_ridge_1se)
+#confusionMatrix(sc_Tst_ridge_1se,test_pca1$TARGET_B)
+
+#Test Performance with lambda.min
+sc_Tst_ridge_min<-predict(cv.ridge, data.matrix(select(test_pca1,  -"TARGET_B")), s="lambda.min",type="response")
+
+sc_Tst_ridge_min[sc_Tst_ridge_min>0.2]  <- 1
+sc_Tst_ridge_min[sc_Tst_ridge_min<=0.2] <- 0
+sc_Tst_ridge_min  <- as.factor(sc_Tst_ridge_min)
+#confusionMatrix(sc_Tst_ridge_min,test_pca1$TARGET_B)
+
+
+#----------------Profit Curves-------------------------------------------------------
+sc_Tst_ridge_min<-predict(cv.ridge, data.matrix(select(test_pca1, -"TARGET_B",)), s="lambda.min",type="response")
+sc_Tst_ridge_min<-as.numeric(sc_Tst_ridge_min)
+sc_Tst_ridge_min<-as.data.frame(sc_Tst_ridge_min)
+sc_Tst_ridge_min$cost[sc_Tst_ridge_min$sc_Tst_ridge_min<0.2]  <- -0.68
+sc_Tst_ridge_min$cost[sc_Tst_ridge_min$sc_Tst_ridge_min>=0.2]  <- 12.32
+sc_Tst_ridge_min <- sc_Tst_ridge_min[order(-sc_Tst_ridge_min$sc_Tst_ridge_min),]
+sc_Tst_ridge_min$summ <- ave(sc_Tst_ridge_min$cost,FUN=cumsum)
+sc_Tst_ridge_min[which.max(sc_Tst_ridge_min$summ),]
+
+sc_Tst_ridge_1se<-predict(cv.ridge, data.matrix(select(test_pca1, -"TARGET_B",)), s="lambda.1se",type="response")
+sc_Tst_ridge_1se<-as.numeric(sc_Tst_ridge_1se)
+sc_Tst_ridge_1se<-as.data.frame(sc_Tst_ridge_1se)
+sc_Tst_ridge_1se$cost[sc_Tst_ridge_1se$sc_Tst_ridge_1se<0.2]  <- -0.68
+sc_Tst_ridge_1se$cost[sc_Tst_ridge_1se$sc_Tst_ridge_1se>=0.2]  <- 12.32
+sc_Tst_ridge_1se <- sc_Tst_ridge_1se[order(-sc_Tst_ridge_1se$sc_Tst_ridge_1se),]
+sc_Tst_ridge_1se$summ <- ave(sc_Tst_ridge_1se$cost,FUN=cumsum)
+sc_Tst_ridge_1se[which.max(sc_Tst_ridge_1se$summ),]
+
+sc_Tst_lasso_min<-predict(cv.lasso, data.matrix(select(test_pca1, -"TARGET_B",)), s="lambda.min",type="response")
+sc_Tst_lasso_min<-as.numeric(sc_Tst_lasso_min)
+sc_Tst_lasso_min<-as.data.frame(sc_Tst_lasso_min)
+sc_Tst_lasso_min$cost[sc_Tst_lasso_min$sc_Tst_lasso_min<0.2]  <- -0.68
+sc_Tst_lasso_min$cost[sc_Tst_lasso_min$sc_Tst_lasso_min>=0.2]  <- 12.32
+sc_Tst_lasso_min <- sc_Tst_lasso_min[order(-sc_Tst_lasso_min$sc_Tst_lasso_min),]
+sc_Tst_lasso_min$summ <- ave(sc_Tst_lasso_min$cost,FUN=cumsum)
+sc_Tst_lasso_min[which.max(sc_Tst_lasso_min$summ),]
+
+sc_Tst_lasso_1se<-predict(cv.lasso, data.matrix(select(test_pca1, -"TARGET_B",)), s="lambda.1se",type="response")
+sc_Tst_lasso_1se<-as.numeric(sc_Tst_lasso_1se)
+sc_Tst_lasso_1se<-as.data.frame(sc_Tst_lasso_1se)
+D_sc_Tst_lasso_1se<-sc_Tst_lasso_1se$sc_Tst_lasso_1se
+D_sc_Tst_lasso_1se<-as.numeric(D_sc_Tst_lasso_1se)
+D_sc_Tst_lasso_1se<-as.data.frame(D_sc_Tst_lasso_1se)
+
+sc_Tst_lasso_1se$cost[sc_Tst_lasso_1se$sc_Tst_lasso_1se<0.2]  <- -0.68
+sc_Tst_lasso_1se$cost[sc_Tst_lasso_1se$sc_Tst_lasso_1se>=0.2]  <- 12.32
+sc_Tst_lasso_1se <- sc_Tst_lasso_1se[order(-sc_Tst_lasso_1se$sc_Tst_lasso_1se),]
+sc_Tst_lasso_1se$summ <- ave(sc_Tst_lasso_1se$cost,FUN=cumsum)
+sc_Tst_lasso_1se[which.max(sc_Tst_lasso_1se$summ),]
+
+rf_data<-train_data
+str(rf_data)
+colnames(rf_data)[colnames(rf_data)=="m"] <- "TARGET_B"
+rf_data$TARGET_B<-as.factor(rf_data$TARGET_B)
+rf_cost <- ranger(TARGET_B~., data=rf_data, num.trees=200, probability = TRUE, importance='permutation',)
+rfPred_prob <- predict(rf_cost,  data.matrix(select(test_pca1, -"TARGET_B",)))$predictions
+rfPred_prob<-as.data.frame(rfPred_prob)
+rfPred_prob_1<-rfPred_prob[[2]]
+rfPred_prob_1<-as.data.frame(rfPred_prob_1)
+rfPred_prob_1$cost[rfPred_prob_1$rfPred_prob_1<0.2]  <- -0.68
+rfPred_prob_1$cost[rfPred_prob_1$rfPred_prob_1>=0.2]  <- 12.32
+res<-rfPred_prob_1
+res <- res[order(-res$rfPred_prob_1),]
+res$summ <- ave(res$cost,FUN=cumsum)
+res[which.max(res$summ),]
+
+
+#gbm_M2<-gbm(TARGET_B~.,data=subset(gbmTrain),distribution='bernoulli',n.tree=2000,shrinkage = 0.01,interaction.depth=4,bag.fraction=0.5,cv.folds=5,n.cores=4)
+
+plot_data<-data.frame(res$summ, sc_Tst_lasso_1se$summ, sc_Tst_lasso_min$summ,sc_Tst_ridge_1se$summ,sc_Tst_ridge_min$summ)
+plot_data$ID <- seq.int(nrow(plot_data))
+matplot (plot_data$ID, cbind (plot_data$res.summ, plot_data$sc_Tst_lasso_1se.summ,plot_data$sc_Tst_lasso_min.summ,plot_data$sc_Tst_ridge_1se.summ,plot_data$sc_Tst_ridge_min.summ), pch = 19)
+
+
+#--------------------------For Target D----------------------------------------------
+sc_Trn_lasso_1se<-predict(cv.lasso, data.matrix(select(train_data, -"TARGET_B",)), s="lambda.1se",type="response")
+sc_Trn_lasso_1se<-as.numeric(sc_Trn_lasso_1se)
+sc_Trn_lasso_1se<-as.data.frame(sc_Trn_lasso_1se)
+
+
+D_pctrain<-cbind(d_Train1,D_pvTrain$TARGET_D, sc_Trn_lasso_1se$sc_Trn_lasso_1se,D_pvTrain$TARGET_B)
+colnames(D_pctrain)[colnames(D_pctrain)=="D_pvtrain$TARGET_B"] <- "TARGET_B"
+
+view(D_pctrain)
+
+
+colnames(D_pctrain)[colnames(D_pctrain)=="D_pvTrain$TARGET_D"] <- "TARGET_D"
+colnames(D_pctrain)[colnames(D_pctrain)=="D_pvTrain$TARGET_B"] <- "TARGET_B"
+colnames(D_pctrain)[colnames(D_pctrain)=="sc_Trn_lasso_1se$sc_Trn_lasso_1se"] <- "prob"
+
+
+D_pctrain<-filter(D_pctrain, D_pctrain$TARGET_B==1)
+D_pctrain<-D_pctrain%>%select(-TARGET_B)
+
+D_pctest<-cbind(d_Test1,DTest$TARGET_D,D_sc_Tst_lasso_1se$D_sc_Tst_lasso_1se,DTest$TARGET_B)
+colnames(D_pctest)[colnames(D_pctest)=="DTest$TARGET_B"] <- "TARGET_B"
+
+D_pctest<-filter(D_pctest,D_pctest$TARGET_B==1)
+D_pctest<-D_pctest%>%select(-TARGET_B)
+colnames(D_pctest)[colnames(D_pctest)=="DTest$TARGET_D"] <- "TARGET_D"
+colnames(D_pctest)[colnames(D_pctest)=="D_sc_Tst_lasso_1se$D_sc_Tst_lasso_1se"] <- "prob"
+view(D_pctest)
+
+#gbm with TARGET_D as target variable
+
+D_pctrain_minus_Prob<-D_pctrain%>%select(-prob)
+D_pctest_minus_Prob<-D_pctest%>%select(-prob)
+
+gbm_M3<-gbm(TARGET_D~.,data=subset(D_pctrain),n.tree=2000,shrinkage = 0.01,interaction.depth=4,bag.fraction=0.5,cv.folds=5,n.cores=4)
+summary(gbm_M3)
+
+gbm_M3_minus_prob<-gbm(TARGET_D~. , data=D_pctrain_minus_Prob, n.trees = 2000, shrinkage = 0.01, interaction.depth =4, bag.fraction = 0.5, cv.folds=5, n.cores=8 )
+
+gbmTTgtD_minus_prob<-predict(gbm_M3_minus_prob, D_pctest_minus_Prob, type = "response")
+cor(gbmTTgtD_minus_prob, D_pctest_minus_Prob$TARGET_D)
+
+gbmTgtD<-predict(gbm_M3, D_pctest, type = "response")
+cor(gbmTgtD, D_pctest$TARGET_D)
+plot(gbmTgtD, D_pctest$TARGET_D)
+(mean((gbmTgtD-D_pctest$TARGET_D)^2))^0.5
+
+gbmTgtD_train<-predict(gbm_M3, D_pctrain, type = "response")
+cor(gbmTgtD, D_pctest$TARGET_D)
+plot(gbmTgtD, D_pctest$TARGET_D)
+(mean((gbmTgtD-D_pctest$TARGET_D)^2))^0.5
+
+(mean((gbmTTgtD_minus_prob - D_pctest_minus_Prob$TARGET_D)^2))^0.5
+
+view(gbmTgtD)
+#-----------------------------------Random Forest-----------------------------------
+
+library(ggpubr)
+rf_D <- ranger(TARGET_D ~., data=D_pctrain, quantreg = TRUE)
+rf_D
+predict_D<-predict(rf_D, D_pctrain,type="response")
+cor(predict_D$predictions, D_pctrain$TARGET_D)
+plot(predict_D$predictions, D_pctrain$TARGET_D)
+df_RF<-cbind(predict_D$predictions, D_pctrain$TARGET_D,D_pctrain$prob)
+df_RF<-as.data.frame(df_RF)
+sp <- ggscatter(df_RF, x="V1",y="V2" ,add = "reg.line",add.params = list(color = "blue", fill = "lightgray") )
+sp+stat_cor(method = "pearson")
+colnames(df_RF)[colnames(df_RF)=="V1"] <- "Prediction"
+colnames(df_RF)[colnames(df_RF)=="V2"] <- "Actual"
+colnames(df_RF)[colnames(df_RF)=="V3"] <- "Prob"
+df_RF <- mutate(df_RF,Expected=df_RF$Prediction*df_RF$Prob)
+
+df_RF <- df_RF[order(-df_RF$Prob),]
+df_RF$summ <- ave(df_RF$Expected,FUN=cumsum)
+df_RF[which.max(df_RF$summ),]
+
+RMSE_RF_train<-(predict_D$predictions-D_pctrain$TARGET_D)
+RMSE_RF_train<-sqrt(mean(RMSE_RF_train^2))
+
+predict_D_test<-predict(rf_D, D_pctest,type="response")
+cor(predict_D_test$predictions, D_pctest$TARGET_D)
+plot(predict_D_test$predictions, D_pctest$TARGET_D)
+df_RF_test<-cbind(predict_D_test$predictions, D_pctest$TARGET_D,D_pctest$prob)
+df_RF_test<-as.data.frame(df_RF_test)
+sp <- ggscatter(df_RF_test, x="V1",y="V2" ,add = "reg.line",add.params = list(color = "blue", fill = "lightgray") )
+sp+stat_cor(method = "pearson")
+
+colnames(df_RF_test)[colnames(df_RF_test)=="V1"] <- "Prediction"
+colnames(df_RF_test)[colnames(df_RF_test)=="V2"] <- "Actual"
+colnames(df_RF_test)[colnames(df_RF_test)=="V3"] <- "Prob"
+df_RF_test <- mutate(df_RF_test,Expected=df_RF_test$Prediction*df_RF_test$Prob)
+
+df_RF_test <- df_RF_test[order(-df_RF_test$Prob),]
+df_RF_test$summ <- ave(df_RF_test$Expected,FUN=cumsum)
+df_RF_test[which.max(df_RF_test$summ),]
+
+write.csv(df_RF_test, file='ExpectedDonations.csv')
+
+RMSE_RF_test<-(predict_D_test$predictions-D_pctest$TARGET_D)
+RMSE_RF_test<-sqrt(mean(RMSE_RF_test^2))
+
+
+
+#Rf without prob values
+
+rf_D_wo_prob <- ranger(TARGET_D ~., data=D_pctrain_minus_Prob, quantreg = TRUE)
+
+predict_D_wo_prob<-predict(rf_D_wo_prob, D_pctrain_minus_Prob,type="response")
+cor(predict_D_wo_prob$predictions, D_pctrain_minus_Prob$TARGET_D)
+plot(predict_D_wo_prob$predictions, D_pctrain_minus_Prob$TARGET_D)
+df_RF_wo_prob<-cbind(predict_D_wo_prob$predictions, D_pctrain_minus_Prob$TARGET_D)
+df_RF_wo_prob<-as.data.frame(df_RF_wo_prob)
+sp <- ggscatter(df_RF_wo_prob, x="V1",y="V2" ,add = "reg.line",add.params = list(color = "blue", fill = "lightgray") )
+sp+stat_cor(method = "pearson")
+
+
+RMSE_RF_train_wo_prob<-(predict_D_wo_prob$predictions-D_pctrain_minus_Prob$TARGET_D)
+RMSE_RF_train_wo_prob<-sqrt(mean(RMSE_RF_train_wo_prob^2))
+
+predict_D_test_wo_prob<-predict(rf_D_wo_prob, D_pctest_minus_Prob,type="response")
+cor(predict_D_test_wo_prob$predictions, D_pctest_minus_Prob$TARGET_D)
+plot(predict_D_test_wo_prob$predictions, D_pctest_minus_Prob$TARGET_D)
+df_RF_test_wo_prob<-cbind(predict_D_test_wo_prob$predictions, D_pctest_minus_Prob$TARGET_D)
+df_RF_test_wo_prob<-as.data.frame(df_RF_test_wo_prob)
+sp <- ggscatter(df_RF_test_wo_prob, x="V1",y="V2" ,add = "reg.line",add.params = list(color = "blue", fill = "lightgray") )
+sp+stat_cor(method = "pearson")
+
+RMSE_RF_test_wo_prob<-(predict_D_test_wo_prob$predictions-D_pctest_minus_Prob$TARGET_D)
+RMSE_RF_test_wo_prob<-sqrt(mean(RMSE_RF_test_wo_prob^2))
+
+
+
+
+
+
+#------------------------------------OLS-------------------------------------------
+
+OLSTrain<-D_pctrain
+OLSTest<-D_pctest
+
+
+OLSmodel<-lm(TARGET_D~., data = OLSTrain)
+
+summary(OLSmodel)
+
+OLSPredictTrn<-predict(OLSmodel, OLSTrain, type = "response")
+(mean((OLSPredictTrn-OLSTrain$TARGET_D)^2))^0.5
+
+
+OLSpredictTst<-predict(OLSmodel, OLSTest, type = "response")
+(mean((OLSpredictTst-OLSTest$TARGET_D)^2))^0.5
+
+#-----------------------------Validation Data----------------------------------------
+
+score_data<-read_csv('C:/Users/palla/Documents/Course Work/Fall 2019/IDS 572- Data Mining for Business/Assignment 2/Final  codes/pva_futureData_forScoring.csv')
+
+score_data1<-score_data %>% mutate(avgAllResp=if_else(NUMPROM>0, NGIFTALL/NUMPROM, 0), avgCardResp=ifelse(CARDPROM>0,CARDGIFT/CARDPROM,0))
+
+score_data1<-score_data1 %>% mutate(LAST_MAX_GIFT=if_else(MAXRAMNT>0, LASTGIFT/MAXRAMNT, 0), MIN_MAX_AMNT=ifelse(MAXRAMNT>0,MINRAMNT/MAXRAMNT,0))
+d1<-paste(score_data1$ADATE_2, "01", sep = "")
+d1<-parse_date_time(d1,  "ymd")
+d2<-paste(score_data1$LASTDATE, "01", sep = "")
+d2<-parse_date_time(d2,  "ymd")
+score_data1<- score_data1 %>% mutate(totWeeks=as.duration(d2 %--% d1)/dweeks())
+ 
+score_data1<-score_data1%>%replace_na(list(AGE=median(score_data1$AGE,na.rm=TRUE)))
+score_data1<-score_data1%>%replace_na(list(INCOME=median(score_data1$INCOME,na.rm=TRUE)))
+myrna2<-function(x) replace_na(x,-1)
+xxVars1<- c(  'PUBHLTH' )
+score_data1<- score_data1 %>% mutate_at(xxVars1, myrna2) 
+score_data1<-score_data1 %>% select(varlist)
+colMeans(is.na(score_data1))[colMeans(is.na(score_data1))>0]
+
+score_pca<-predict(pca_fun,newdata=score_data1)
+
+score_pca<-as.data.frame(score_pca)
+score_pca<-score_pca[,1:15]
+
+score_pca <- mutate(TARGET_B = 0,score_pca)
+
+D_Lasso<-predict(cv.lasso, data.matrix(select(score_pca,-"TARGET_B")), s="lambda.min",type="response")
+D_Lasso_B<-predict(cv.lasso, data.matrix(select(score_pca,-"TARGET_B")), s="lambda.min",type="class")
+D_Lasso<-as.numeric(D_Lasso)
+D_Lasso<-as.data.frame(D_Lasso)
+D_Lasso <- mutate(TARGET_B = 0,D_Lasso)
+D_Lasso$TARGET_B[D_Lasso$D_Lasso>0.2]  <- 1
+
+D_score<-cbind(score_data1,D_Lasso$D_Lasso)
+colnames(D_score)[colnames(D_score)=="D_Lasso$D_Lasso"] <- "prob"
+predict_score<-predict(rf_D, D_score)
+final_output<-predict_score$predictions
+
+final_output <- cbind(D_Lasso$TARGET_B,predict_score$predictions)
+
+final_output<-as.data.frame(final_output)
+final_output$V2[final_output$V1==0]  <- 0
+
+colnames(final_output)[colnames(final_output)=="V1"] <- "TARGET_B"
+colnames(final_output)[colnames(final_output)=="V2"] <- "TARGET_D"
+
+final_output$TARGET_D<-round(final_output$TARGET_D, 2)
+final_output<-cbind(score_data$CONTROLN,final_output)
+
+write.csv(final_output, file='Donation Amounts - FutureFundRaising.csv')
+
+```
+
+
+Develop a random forest model -- use the 'ranger' package, which is much faster.
+
+Develop a glm model - how will you select variables for this?  Maybe calculate auc on each individual atrtibute to select those which may be useful -- you can use the R code discussed in class.  
+Or use a random forest to help select variables, and then build a glm model? 
+
+
+
+
+
