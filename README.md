@@ -37,7 +37,7 @@ I Used logistic regression to obtain the best value of lambda that could be used
 
 
 
-![alt text]()
+![alt text](https://img1.wsimg.com/isteam/ip/6accb018-0248-4224-8307-a1bd01733c4f/Screenshot_143.png/:/cr=t:0%25,l:0%25,w:100%25,h:100%25/rs=w:1280)
 
 Next, I compared different models based on profitability as the deciding factor and for this process, I used different classification threshold values of 0.2, 0.3, and 0.5. Here the cost of mailing a donor is $0.68 and the average expected donation amount is $13.00. So, if mail is sent to a donor and donor donates, then it results in a net profit of $12.32 ($13.00-$0.68) while if they don't donate, it's a loss of $0.68 ($0-$0.68). Following were the results
 
